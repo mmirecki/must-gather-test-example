@@ -37,7 +37,7 @@ def _get_results_dirs():
 def pre_run_check():
     results = _get_results_dirs()
     if len(results) > 0:
-        print('Results directory exists. Please run the script in an empty dir')
+        print('Results directory exists! Please run the script in an empty dir!')
         # exit()
 
 
@@ -67,16 +67,8 @@ def delete_node_gather_ds(config):
 
 
 def execute(cmd):
-    out = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT
-    )
-    #print('IN:' + ' '.join(cmd))
+    out = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     stdout, stderr = out.communicate()
-    #print('OUT:' + str(stdout))
-    #print('ERR:' + str(stderr))
-
     return stdout
 
 
@@ -124,8 +116,6 @@ def check_cni_config_files(config, resulsts_dir, node, ng_ds_pod):
     ))
 
     for cni_config_file_name in os.listdir(cni_config_dir_name):
-        print("CNI CONFIG FILE: " + cni_config_file_name)
-
         cmd = CMD_NODE_LS_CNI_CONFIG.format(config=config, ng_ds_pod=ng_ds_pod, file_name=cni_config_file_name).split()
         cni_config_output = execute(cmd).decode("utf-8")
         with open(os.path.join(cni_config_dir_name, cni_config_file_name)) as cni_config_file:
@@ -142,44 +132,80 @@ def check_nodes(results_dir, config):
     nodes = get_node_gather_ds(config)
     print('NODES ' + str(nodes))
 
-    for node in nodes.keys():
-        check_cni_bin_files(config, results_dir, node, nodes[node])
-        check_cni_config_files(config, results_dir, node, nodes[node])
+    if __name__ == '__main__':
+        for node in nodes.keys():
+            check_cni_bin_files(config, results_dir, node, nodes[node])
+            check_cni_config_files(config, results_dir, node, nodes[node])
+
+            # ...
+            # ... check all items collected for nodes
+
+    delete_node_gather_ds(config)
 
 
-def check_resource(config, results_dir, resource, path, is_list=True):
+def check_resource(config, results_dir, resource, path):
     CMD_GET_NETWORKADDONSCONFIG = 'oc get {resource} -o yaml --config={config}'
     out = execute(CMD_GET_NETWORKADDONSCONFIG.format(config=config, resource=resource).split())
     data = yaml.load(out)
 
-    if is_list:
-        data = data['items'][0]
+    resource_file_name = os.path.join(results_dir, path)
+    with open(resource_file_name) as resource_file:
+        file_content = yaml.load(resource_file.read())
 
-    networkaddonsconfig_file_name = os.path.join(results_dir, path)
-    with open(networkaddonsconfig_file_name) as networkaddonsconfig_file:
-        networkaddonsconfig_file_content = networkaddonsconfig_file.read()
-        networkaddonsconfig = yaml.load(networkaddonsconfig_file_content)
-
-        if (data['spec'] == networkaddonsconfig['spec']):
+        # Only matching the spec, but other items should be matched too (depending on resource)
+        if (data['spec'] == file_content['spec']):
             print('MATCH: ' + resource)
         else:
             print('NO MATCH: ' + resource)
-            print(DeepDiff(data, networkaddonsconfig))
+            print(DeepDiff(data, file_content))
 
-def check_list_of_resources(config, results_dir, list_name, resource_name, path):
+
+def check_list_of_resources(config, results_dir, resource_name, path):
     CMD = 'oc get {name} -o=custom-columns=NAME:.metadata.name --no-headers --config={config}'
-    cmd = CMD.format(config=config, name=list_name).split()
-    network_attachments = execute(cmd).decode("utf-8")
-    for network_attachment in network_attachments.splitlines():
+    cmd = CMD.format(config=config, name=resource_name).split()
+    resources = execute(cmd).decode("utf-8")
+    for resource in resources.splitlines():
         check_resource(
             config,
             results_dir,
-            resource_name.format(name=network_attachment),
-            path.format(name=network_attachment),
-            is_list=False
+            resource_name + '/' + resource,
+            path.format(name=resource),
         )
 
+
+def check_resources(results_dir, config):
+    check_resource(
+        config,
+        results_dir,
+        'ns/nmstate',
+        'namespaces/nmstate/nmstate.yaml',
+    )
+
+    check_list_of_resources(
+        config,
+        results_dir,
+        'NetworkAddonsConfig',
+        'cluster-scoped-resources/networkaddonsoperator.network.kubevirt.io/networkaddonsconfigs/{name}.yaml'
+    )
+
+    check_list_of_resources(
+        config,
+        results_dir,
+        'network-attachment-definitions',
+        'namespaces/default/k8s.cni.cncf.io/network-attachment-definitions/{name}.yaml'
+    )
+
+    check_list_of_resources(
+        config,
+        results_dir,
+        'nodenetworkstates',
+        'cluster-scoped-resources/nmstate.io/nodenetworkstates/{name}.yaml'
+    )
+
+    # ... check all other resources collected by must-gather
+
 ##################
+
 
 pre_run_check()
 
@@ -189,37 +215,5 @@ results_dir = get_results_dir()
 
 check_nodes(results_dir, config)
 
-
-check_resource(
-    config,
-    results_dir,
-    'NetworkAddonsConfig',
-    'cluster-scoped-resources/networkaddonsoperator.network.kubevirt.io/networkaddonsconfigs/cluster.yaml'
-)
-
-
-check_resource(
-    config,
-    results_dir,
-    'ns/nmstate',
-    'namespaces/nmstate/nmstate.yaml',
-    is_list=False
-)
-
-
-check_list_of_resources(
-    config,
-    results_dir,
-    'network-attachment-definitions',
-    'network-attachment-definitions/{name}',
-    'namespaces/default/k8s.cni.cncf.io/network-attachment-definitions/{name}.yaml'
-)
-
-check_list_of_resources(
-    config,
-    results_dir,
-    'nodenetworkstates',
-    'nodenetworkstate/{name}',
-    'cluster-scoped-resources/nmstate.io/nodenetworkstates/{name}.yaml'
-)
+check_resources(results_dir, config)
 
