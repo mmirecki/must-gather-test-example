@@ -1,88 +1,21 @@
 #!/usr/bin/python3
 
+import utils
 
-import subprocess
 import sys
-import re
 import os
-import yaml
-from deepdiff import DeepDiff
+
+OPT_CNI_CONFIG_DIR = 'etc/cni/net.d'
+OPT_CNI_BIN_FILE = 'opt-cni-bin'
+NODES_DIR = 'nodes'
+#IMAGE = 'docker.io/mmirecki/must-gather7'
+IMAGE = 'quay.io/kubevirt/must-gather'
+
 
 config = sys.argv[1]
 
-IMAGE = 'docker.io/mmirecki/must-gather7'
 
-NODES_DIR = 'nodes'
-OPT_CNI_CONFIG_DIR = 'etc/cni/net.d'
-
-OPT_CNI_BIN_FILE = 'opt-cni-bin'
-
-CMD_RUN_MUST_GATHER = '/usr/bin/oc adm must-gather --image={image} --config={config}'
-CMD_RUN_GET_PODS = '/usr/bin/oc get pods --config={config}'
-
-CMD_NG_DS_ADMIN = 'oc login -u system:admin --config={config}'
-CMD_NG_DS_CRD = 'oc create -f node-gather-crd.yaml --config={config}'
-CMD_NG_DS_ADD_SCC_TO_USER = 'oc adm policy add-scc-to-user privileged -n node-gather -z node-gather --config={config}'
-CMD_NG_DS_DS = 'oc create -f node-gather-ds.yaml --config={config}'
-
-CMD_NG_DS_DEL_DS = 'oc delete -f node-gather-ds.yaml --config={config}'
-CMD_NG_DS_DEL_CRD = 'oc delete -f node-gather-crd.yaml --config={config}'
-
-
-def _get_results_dirs():
-    files = [f for f in os.listdir('.') if re.match(r'must-gather*', f)]
-    return files
-
-
-def pre_run_check():
-    results = _get_results_dirs()
-    if len(results) > 0:
-        print('Results directory exists! Please run the script in an empty dir!')
-        # exit()
-
-
-def get_results_dir():
-    results = _get_results_dirs()
-    if len(results) != 1:
-        print('Zero or multiple results dirs. Must be exactly 1.')
-        exit()
-    return results[0]
-
-
-def run_must_gather(image, config):
-    cmd_run_must_gather = CMD_RUN_MUST_GATHER.format(image=image, config=config).split()
-    execute(cmd_run_must_gather)
-
-
-def create_node_gather_ds(config):
-    execute(CMD_NG_DS_ADMIN.format(config=config).split())
-    execute(CMD_NG_DS_CRD.format(config=config).split())
-    execute(CMD_NG_DS_ADD_SCC_TO_USER.format(config=config).split())
-    execute(CMD_NG_DS_DS.format(config=config).split())
-
-
-def delete_node_gather_ds(config):
-    execute(CMD_NG_DS_DEL_DS.format(config=config).split())
-    execute(CMD_NG_DS_DEL_CRD.format(config=config).split())
-
-
-def execute(cmd):
-    out = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    stdout, stderr = out.communicate()
-    return stdout
-
-
-CMD_GET_DS_NODES = 'oc get pod -o=custom-columns=NODE:.spec.nodeName,NAME:.metadata.name --no-headers -n node-gather --config={config}'
-
-
-def get_node_gather_ds(config):
-    nodes = dict()
-    out = execute(CMD_GET_DS_NODES.format(config=config).split())
-    for line in out.splitlines():
-        print('Line: ' + str(line))
-        line = line.split()
-        nodes[line[0].decode("utf-8")] = line[1].decode("utf-8")
-    return nodes
+os.environ["KUBECONFIG"] = config
 
 
 CMD_NODE_CNI_BIN = 'oc exec -i {ng_ds_pod} -n node-gather --config={config} -- ls -l /host/opt/cni/bin'
@@ -98,7 +31,7 @@ def check_cni_bin_files(config, resulsts_dir, node, ng_ds_pod):
 
         cmd = CMD_NODE_CNI_BIN.format(config=config, ng_ds_pod=ng_ds_pod).split()
 
-        cni_bin_output = execute(cmd).decode("utf-8")
+        cni_bin_output, return_code = utils.execute(cmd).decode("utf-8")
 
         if cni_bin_file_content == cni_bin_output:
             print('CNI BIN MATCHES')
@@ -117,7 +50,7 @@ def check_cni_config_files(config, resulsts_dir, node, ng_ds_pod):
 
     for cni_config_file_name in os.listdir(cni_config_dir_name):
         cmd = CMD_NODE_LS_CNI_CONFIG.format(config=config, ng_ds_pod=ng_ds_pod, file_name=cni_config_file_name).split()
-        cni_config_output = execute(cmd).decode("utf-8")
+        cni_config_output, return_code = utils.execute(cmd).decode("utf-8")
         with open(os.path.join(cni_config_dir_name, cni_config_file_name)) as cni_config_file:
             cni_config_file_content = cni_config_file.read()
             if cni_config_file_content == cni_config_output:
@@ -126,10 +59,13 @@ def check_cni_config_files(config, resulsts_dir, node, ng_ds_pod):
                 print('ERROR: CNI CONFIG {} MATCHES'.format(cni_config_file_name))
 
 
-def check_nodes(results_dir, config):
-    create_node_gather_ds(config)
+def check_ip_addr(config, results_dir, node, ng_ds_pod):
+    pass
 
-    nodes = get_node_gather_ds(config)
+def check_nodes(results_dir, config):
+    utils.create_node_gather_ds(config)
+
+    nodes = utils.get_node_gather_ds(config)
     print('NODES ' + str(nodes))
 
     if __name__ == '__main__':
@@ -137,83 +73,162 @@ def check_nodes(results_dir, config):
             check_cni_bin_files(config, results_dir, node, nodes[node])
             check_cni_config_files(config, results_dir, node, nodes[node])
 
+            check_ip_addr(config, results_dir, node, nodes[node])
+
             # ...
             # ... check all items collected for nodes
 
-    delete_node_gather_ds(config)
+        utils.delete_node_gather_ds(config)
 
 
-def check_resource(config, results_dir, resource, path):
-    CMD_GET_NETWORKADDONSCONFIG = 'oc get {resource} -o yaml --config={config}'
-    out = execute(CMD_GET_NETWORKADDONSCONFIG.format(config=config, resource=resource).split())
-    data = yaml.load(out)
 
-    resource_file_name = os.path.join(results_dir, path)
-    with open(resource_file_name) as resource_file:
-        file_content = yaml.load(resource_file.read())
+def check_namespaces(results_dir, config):
 
-        # Only matching the spec, but other items should be matched too (depending on resource)
-        if (data['spec'] == file_content['spec']):
-            print('MATCH: ' + resource)
-        else:
-            print('NO MATCH: ' + resource)
-            print(DeepDiff(data, file_content))
+    namespaces_to_check = (
+        'nmstate', 'kubemacpool-system', 'linux-bridge', 'openshift-sdn', 'cluster-network-addons-operator', 'sriov',
+        'kubevirt-hyperconverged', 'openshift-operator-lifecycle-manager', 'openshift-marketplace',
+        #'cdi', 'kubevirt-web-ui', '', '', '', '', '', '', '', '', '',
 
-
-def check_list_of_resources(config, results_dir, resource_name, path):
-    CMD = 'oc get {name} -o=custom-columns=NAME:.metadata.name --no-headers --config={config}'
-    cmd = CMD.format(config=config, name=resource_name).split()
-    resources = execute(cmd).decode("utf-8")
-    for resource in resources.splitlines():
-        check_resource(
-            config,
-            results_dir,
-            resource_name + '/' + resource,
-            path.format(name=resource),
-        )
-
-
-def check_resources(results_dir, config):
-    check_resource(
-        config,
-        results_dir,
-        'ns/nmstate',
-        'namespaces/nmstate/nmstate.yaml',
     )
 
-    check_list_of_resources(
+    for namespace in namespaces_to_check:
+        utils.check_resource(
+            config,
+            results_dir,
+            'ns/{namespace}'.format(namespace=namespace),
+            'namespaces/{namespace}/{namespace}.yaml'.format(namespace=namespace),
+            ('spec')
+        )
+
+def check_resources(results_dir, config):
+
+    utils.check_list_of_resources(
         config,
         results_dir,
         'NetworkAddonsConfig',
-        'cluster-scoped-resources/networkaddonsoperator.network.kubevirt.io/networkaddonsconfigs/{name}.yaml'
+        'cluster-scoped-resources/networkaddonsoperator.network.kubevirt.io/networkaddonsconfigs/{name}.yaml',
+        (('spec',),)
     )
 
-    check_list_of_resources(
+    utils.check_list_of_resources(
         config,
         results_dir,
         'network-attachment-definitions',
-        'namespaces/default/k8s.cni.cncf.io/network-attachment-definitions/{name}.yaml'
+        'namespaces/{namespace}/k8s.cni.cncf.io/network-attachment-definitions/{name}.yaml',
+        (
+            ('spec',),
+            ('metadata', 'uid'),
+            ('metadata', 'name'),
+            ('metadata', 'namespace'),
+        )
     )
 
-    check_list_of_resources(
+    utils.check_list_of_resources(
         config,
         results_dir,
         'nodenetworkstates',
-        'cluster-scoped-resources/nmstate.io/nodenetworkstates/{name}.yaml'
+        'cluster-scoped-resources/nmstate.io/nodenetworkstates/{name}.yaml',
+        (
+            ('spec',),
+            ('metadata', 'uid'),
+            ('metadata', 'name'),
+        )
     )
+
+    # Note: this assumes all is tags will be on the "latest" tag
+    utils.check_list_of_resources(
+        config,
+        results_dir,
+        'istag',
+        'namespaces/openshift/image.openshift.io/imagestreamtags/{name}.yaml',
+        (
+            ('image', 'dockerImageReference'),
+            ('tag', 'name'),
+            ('tag', 'from'),
+            ('metadata', 'uid'),
+            ('metadata', 'name'),
+            ('metadata', 'namespace'),
+         )
+    )
+
+
+    """
+    # TODO
+    check_list_of_resources(
+        config,
+        results_dir,
+        'datavolumes',
+        ''
+    )
+
+    # TODO
+    check_list_of_resources(
+        config,
+        results_dir,
+        'v2vvmwares',
+        ''
+    )
+
+    # TODO
+    check_list_of_resources(
+        config,
+        results_dir,
+        'virtualmachineinstances',
+        ''
+    )
+
+    # TODO
+    check_list_of_resources(
+        config,
+        results_dir,
+        'virtualmachineinstancereplicasets',
+        ''
+    )
+
+    # TODO
+    check_list_of_resources(
+        config,
+        results_dir,
+        'virtualmachineinstancepresets',
+        ''
+    )
+
+    # TODO
+    check_list_of_resources(
+        config,
+        results_dir,
+        'virtualmachineinstancemigrations',
+        ''
+    )
+
+    # TODO
+    check_list_of_resources(
+        config,
+        results_dir,
+        'virtualmachines',
+        ''
+    )
+"""
+
+
+
+
+
+
+
 
     # ... check all other resources collected by must-gather
 
 ##################
 
 
-pre_run_check()
+utils.pre_run_check()
+print("1")
+#utils.run_must_gather(IMAGE, config)
+print("2")
+results_dir = utils.get_results_dir()
 
-run_must_gather(IMAGE, config)
-
-results_dir = get_results_dir()
-
-check_nodes(results_dir, config)
+# check_nodes(results_dir, config)
 
 check_resources(results_dir, config)
 
