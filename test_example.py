@@ -4,8 +4,8 @@ import utils
 
 import sys
 import os
+import re
 
-OPT_CNI_CONFIG_DIR = 'etc/cni/net.d'
 OPT_CNI_BIN_FILE = 'opt-cni-bin'
 NODES_DIR = 'nodes'
 #IMAGE = 'docker.io/mmirecki/must-gather7'
@@ -20,47 +20,52 @@ os.environ["KUBECONFIG"] = config
 
 CMD_NODE_CNI_BIN = 'oc exec -i {ng_ds_pod} -n node-gather --config={config} -- ls -l /host/opt/cni/bin'
 
+OC_EXEC_COMMAND = 'oc exec -i {ng_ds_pod} -n node-gather --config={config} -- {resource_cmd}'
 
-def check_cni_bin_files(config, resulsts_dir, node, ng_ds_pod):
-    cni_opt_cni_bin_file_name = os.path.join('.', os.path.join(
+def check_node_resource(config, resulsts_dir, node, ng_ds_pod, file_path, resource_cmd, name):
+    file_name = os.path.join('.', os.path.join(
         os.path.join(resulsts_dir, NODES_DIR),
-        os.path.join(node, OPT_CNI_BIN_FILE)
+        os.path.join(node, file_path)
     ))
-    with open(cni_opt_cni_bin_file_name) as cni_bin_file:
-        cni_bin_file_content = cni_bin_file.read()
+    with open(file_name) as resource_file:
+        file_content = resource_file.read()
 
-        cmd = CMD_NODE_CNI_BIN.format(config=config, ng_ds_pod=ng_ds_pod).split()
+        cmd = OC_EXEC_COMMAND.format(config=config, ng_ds_pod=ng_ds_pod, resource_cmd=resource_cmd).split()
 
-        cni_bin_output, return_code = utils.execute(cmd).decode("utf-8")
+        cmd_output, return_code = utils.execute(cmd)
+        cmd_output = cmd_output.decode("utf-8")
 
-        if cni_bin_file_content == cni_bin_output:
-            print('CNI BIN MATCHES')
+        if file_content == cmd_output:
+            print('    {name} MATCHES'.format(name=name))
         else:
-            print('ERROR: CNI BIN DIR DOES NOT MATCH')
+            print('ERROR: {name} DOES NOT MATCH'.format(name=name))
 
 
-CMD_NODE_LS_CNI_CONFIG = 'oc exec -i {ng_ds_pod} -n node-gather --config={config} -- cat /host/etc/cni/net.d/{file_name}'
-
-
+OPT_CNI_CONFIG_DIR = 'etc/cni/net.d'
 def check_cni_config_files(config, resulsts_dir, node, ng_ds_pod):
-    cni_config_dir_name = os.path.join('.', os.path.join(
-        os.path.join(resulsts_dir, NODES_DIR),
-        os.path.join(node, OPT_CNI_CONFIG_DIR)
-    ))
-
+    cni_config_dir_name = os.path.join(os.path.join(resulsts_dir, NODES_DIR), os.path.join(node, OPT_CNI_CONFIG_DIR))
     for cni_config_file_name in os.listdir(cni_config_dir_name):
-        cmd = CMD_NODE_LS_CNI_CONFIG.format(config=config, ng_ds_pod=ng_ds_pod, file_name=cni_config_file_name).split()
-        cni_config_output, return_code = utils.execute(cmd).decode("utf-8")
-        with open(os.path.join(cni_config_dir_name, cni_config_file_name)) as cni_config_file:
-            cni_config_file_content = cni_config_file.read()
-            if cni_config_file_content == cni_config_output:
-                print('CNI CONFIG {} MATCHES'.format(cni_config_file_name))
-            else:
-                print('ERROR: CNI CONFIG {} MATCHES'.format(cni_config_file_name))
+        check_node_resource(
+            config, resulsts_dir, node, ng_ds_pod,
+            os.path.join(OPT_CNI_CONFIG_DIR, cni_config_file_name),
+            'cat /host/etc/cni/net.d/{file_name}'.format(file_name=cni_config_file_name),
+            'CNI CONFIG'
+        )
 
+def check_nft_files(config, resulsts_dir, node, ng_ds_pod):
+    nft_dir_name = os.path.join(os.path.join(resulsts_dir, NODES_DIR), node)
+    files = [f for f in os.listdir(nft_dir_name) if re.match(r'nft-*', f)]
+    for nft_file_name in files:
+        nft_parts = nft_file_name.split('-')
 
-def check_ip_addr(config, results_dir, node, ng_ds_pod):
-    pass
+        resource_cmd = 'nft list table {family} {table}'.format(family=nft_parts[1], table=nft_parts[2])
+        cmd = OC_EXEC_COMMAND.format(config=config, ng_ds_pod=ng_ds_pod, resource_cmd=resource_cmd)
+        _, return_code = utils.execute(cmd.split())
+        # We can not compare content, as packet/byte count changes too fast.
+        if return_code == 0:
+            print('    NFT file present')
+        else:
+            print('ERROR: NFT file NOT present')
 
 def check_nodes(results_dir, config):
     utils.create_node_gather_ds(config)
@@ -70,13 +75,57 @@ def check_nodes(results_dir, config):
 
     if __name__ == '__main__':
         for node in nodes.keys():
-            check_cni_bin_files(config, results_dir, node, nodes[node])
+            print('NODE: {node}'.format(node=node))
+
+
+            check_node_resource(
+                config, results_dir, node, nodes[node], 'opt-cni-bin',
+                'ls -l /host/opt/cni/bin', 'CNI BIN'
+            )
+
+            check_node_resource(
+                config, results_dir, node, nodes[node], 'ip.txt',
+                'ip a', 'IP ADDR'
+            )
+
+            check_node_resource(
+                config, results_dir, node, nodes[node], 'bridge',
+                'ip -o link show type bridge', 'BRIDGE'
+            )
+
+            check_node_resource(
+                config, results_dir, node, nodes[node], 'vlan',
+                'bridge -j vlan show', 'VLANS'
+            )
+
+            check_node_resource(
+                config, results_dir, node, nodes[node], 'dev_vfio',
+                'ls -al /host/dev/vfio/', 'VFIO'
+            )
+
+            check_node_resource(
+                config, results_dir, node, nodes[node], 'dmesg',
+                'dmesg', 'dmesg'
+            )
+
+            check_node_resource(
+                config, results_dir, node, nodes[node], 'proc_cmdline',
+                'cat /host/proc/cmdline', 'proc_cmdline'
+            )
+
+            check_node_resource(
+                config, results_dir, node, nodes[node], 'lspci',
+                'lspci -vv', 'lspci'
+            )
+
+            check_node_resource(
+                config, results_dir, node, nodes[node], 'pcidp_config.json',
+                'cat /host/etc/pcidp/config.json', 'pcidp_config'
+            )
+
+
             check_cni_config_files(config, results_dir, node, nodes[node])
-
-            check_ip_addr(config, results_dir, node, nodes[node])
-
-            # ...
-            # ... check all items collected for nodes
+            check_nft_files(config, results_dir, node, nodes[node])
 
         utils.delete_node_gather_ds(config)
 
@@ -135,7 +184,6 @@ def check_resources(results_dir, config):
         )
     )
 
-    # Note: this assumes all is tags will be on the "latest" tag
     utils.check_list_of_resources(
         config,
         results_dir,
@@ -152,83 +200,30 @@ def check_resources(results_dir, config):
     )
 
 
-    """
-    # TODO
-    check_list_of_resources(
-        config,
-        results_dir,
-        'datavolumes',
-        ''
-    )
-
-    # TODO
-    check_list_of_resources(
-        config,
-        results_dir,
-        'v2vvmwares',
-        ''
-    )
-
-    # TODO
-    check_list_of_resources(
-        config,
-        results_dir,
-        'virtualmachineinstances',
-        ''
-    )
-
-    # TODO
-    check_list_of_resources(
-        config,
-        results_dir,
-        'virtualmachineinstancereplicasets',
-        ''
-    )
-
-    # TODO
-    check_list_of_resources(
-        config,
-        results_dir,
-        'virtualmachineinstancepresets',
-        ''
-    )
-
-    # TODO
-    check_list_of_resources(
-        config,
-        results_dir,
-        'virtualmachineinstancemigrations',
-        ''
-    )
-
-    # TODO
-    check_list_of_resources(
+    utils.check_list_of_resources(
         config,
         results_dir,
         'virtualmachines',
-        ''
+        'namespaces/{namespace}/kubevirt.io/virtualmachines/{name}.yaml',
+        (
+            ('spec',),
+            ('metadata', 'uid'),
+            ('metadata', 'name'),
+        )
     )
-"""
-
-
-
-
-
-
-
-
-    # ... check all other resources collected by must-gather
 
 ##################
 
 
 utils.pre_run_check()
-print("1")
-#utils.run_must_gather(IMAGE, config)
-print("2")
+print('Collecting must-gather data')
+utils.run_must_gather(IMAGE, config)
+print('Must-gather data collected')
 results_dir = utils.get_results_dir()
 
-# check_nodes(results_dir, config)
+check_nodes(results_dir, config)
+
+check_namespaces(results_dir, config)
 
 check_resources(results_dir, config)
 
